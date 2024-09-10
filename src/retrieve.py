@@ -17,10 +17,10 @@ from collections import Counter
 import requests
 import re
 import itertools
-from openai.error import RateLimitError
+from openai import RateLimitError
 import bs4
 from typing import List, Dict, Any
-openai.api_key = ""  # set openai key here
+openai.api_key = 'db1b533c014143beb51cc738775edb09'  # set openai key here
 
 QGEN_PROMPT = """I will check things you said and ask questions.
 
@@ -59,6 +59,7 @@ You said: {claim}
 To verify it,
 """.strip()
 
+
 def is_tag_visible(element: bs4.element) -> bool:
     """Determines if an HTML element is visible.
 
@@ -77,6 +78,7 @@ def is_tag_visible(element: bs4.element) -> bool:
     ] or isinstance(element, bs4.element.Comment):
         return False
     return True
+
 
 def parse_api_response(api_response: str) -> List[str]:
     """Extract questions from the OpenAI API response.
@@ -100,15 +102,16 @@ def parse_api_response(api_response: str) -> List[str]:
 
     return questions
 
+
 @backoff.on_exception(backoff.expo, RateLimitError)
 def run_question_generation(prompt, model, temperature, num_rounds, num_retries=5):
     questions = set()
     for _ in range(num_rounds):
         for _ in range(num_retries):
             try:
-                response = openai.ChatCompletion.create(
+                response = openai.chat.completions.create(
                     model=model,
-                    messages = [
+                    messages=[
                         {
                             "role": "user", "content": prompt
                         }
@@ -117,17 +120,18 @@ def run_question_generation(prompt, model, temperature, num_rounds, num_retries=
                     max_tokens=256,
                 )
                 cur_round_questions = parse_api_response(
-                    response.choices[0]["message"]["content"].strip() 
+                    response.choices[0]["message"]["content"].strip()
                 )
-                    
+
                 questions.update(cur_round_questions)
                 break
-            except openai.error.OpenAIError as exception:
+            except openai.OpenAIError as exception:
                 print(f"{exception}. Retrying...")
                 time.sleep(1)
 
     questions = list(sorted(questions))
     return questions
+
 
 def remove_duplicate_questions(model, all_questions):
     qset = [all_questions[0]]
@@ -137,6 +141,7 @@ def remove_duplicate_questions(model, all_questions):
         if np.max(scores) < 0.60:
             qset.append(question)
     return qset
+
 
 def scrape_url(url: str, timeout: float = 3) -> Tuple[str, str]:
     """Scrapes a URL for all text information.
@@ -170,7 +175,8 @@ def scrape_url(url: str, timeout: float = 3) -> Tuple[str, str]:
     web_text = " ".join(web_text.split())
     return web_text, url
 
-def search_google(query: str, num_web_pages: int = 10, timeout : int = 6, save_url: str = '') -> List[str]:
+
+def search_google(query: str, num_web_pages: int = 10, timeout: int = 6, save_url: str = '') -> List[str]:
     """Searches the query using Google. 
     Args:
         query: Search query.
@@ -187,19 +193,20 @@ def search_google(query: str, num_web_pages: int = 10, timeout : int = 6, save_u
     # mobile user-agent
     MOBILE_USER_AGENT = "Mozilla/5.0 (Linux; Android 7.0; SM-G930V Build/NRD90M) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.125 Mobile Safari/537.36"
     headers = {'User-Agent': USER_AGENT}
-    
+
     # set language
     # set the Google interface language, use &hl=XX
     # set the preferred language of the search results, use &lr=lang_XX
     # set language as en, otherwise it will return many translation web pages to Arabic that can't be opened correctly.
-    lang = "en" 
+    lang = "en"
 
     # scrape google results
     urls = []
     for page in range(0, num_web_pages, 10):
         # here page is google search's bottom page meaning, click 2 -> start=10
         # url = "https://www.google.com/search?q={}&start={}".format(query, page)
-        url = "https://www.google.com/search?q={}&lr=lang_{}&hl={}&start={}".format(query, lang, lang, page)
+        url = "https://www.google.com/search?q={}&lr=lang_{}&hl={}&start={}".format(
+            query, lang, lang, page)
         r = requests.get(url, headers=headers, timeout=timeout)
         # collect all urls by regular expression
         # how to do if I just want to have the returned top-k pages?
@@ -214,6 +221,7 @@ def search_google(query: str, num_web_pages: int = 10, timeout : int = 6, save_u
             for url in urls:
                 file.write(url + '\n')
     return urls
+
 
 def chunk_text(
     text: str,
@@ -239,35 +247,43 @@ def chunk_text(
 
     passages = []
     try:
-        doc = tokenizer(text[:500000])  # Take 500k chars to not break tokenization.
+        # Take 500k chars to not break tokenization.
+        doc = tokenizer(text[:500000])
         sents = [
             s.text.replace("\n", " ")
             for s in doc.sents
-            if len(s.text) <= filter_sentence_len  # Long sents are usually metadata.
+            # Long sents are usually metadata.
+            if len(s.text) <= filter_sentence_len
         ]
         for idx in range(0, len(sents), sliding_distance):
-            passages.append((" ".join(sents[idx : idx + sentences_per_passage]), idx, idx + sentences_per_passage-1))
+            passages.append((" ".join(
+                sents[idx: idx + sentences_per_passage]), idx, idx + sentences_per_passage-1))
     except UnicodeEncodeError as _:  # Sometimes run into Unicode error when tokenizing.
         print("Unicode error when using Spacy. Skipping text.")
 
     return passages
 
+
 def get_relevant_snippets(query, tokenizer, passage_ranker, timeout=10, max_search_results_per_query=5, max_passages_per_search_result_to_return=2, sentences_per_passage=5):
     search_results = search_google(query, timeout=timeout)
 
     with concurrent.futures.ThreadPoolExecutor() as e:
-        scraped_results = e.map(scrape_url, search_results, itertools.repeat(timeout))
+        scraped_results = e.map(
+            scrape_url, search_results, itertools.repeat(timeout))
     # Remove URLs if we weren't able to scrape anything or if they are a PDF.
-    scraped_results = [r for r in scraped_results if r[0] and ".pdf" not in r[1]]
+    scraped_results = [
+        r for r in scraped_results if r[0] and ".pdf" not in r[1]]
     # print("Num Bing Search Results: ", len(scraped_results))
     retrieved_passages = list()
     for webtext, url in scraped_results[:max_search_results_per_query]:
-        passages = chunk_text(text=webtext, tokenizer=tokenizer, sentences_per_passage=sentences_per_passage)
+        passages = chunk_text(text=webtext, tokenizer=tokenizer,
+                              sentences_per_passage=sentences_per_passage)
         if not passages:
             continue
 
         # Score the passages by relevance to the query using a cross-encoder.
-        scores = passage_ranker.predict([(query, p[0]) for p in passages]).tolist()
+        scores = passage_ranker.predict(
+            [(query, p[0]) for p in passages]).tolist()
         passage_scores = list(zip(passages, scores))
 
         # Take the top passages_per_search passages for the current search result.
@@ -276,7 +292,7 @@ def get_relevant_snippets(query, tokenizer, passage_ranker, timeout=10, max_sear
         relevant_items = list()
         for passage_item, score in passage_scores:
             overlap = False
-            if len(relevant_items) > 0:                
+            if len(relevant_items) > 0:
                 for item in relevant_items:
                     if passage_item[1] >= item[1] and passage_item[1] <= item[2]:
                         overlap = True
@@ -285,7 +301,7 @@ def get_relevant_snippets(query, tokenizer, passage_ranker, timeout=10, max_sear
                         overlap = True
                         break
 
-            # Only consider top non-overlapping relevant passages to maximise for information 
+            # Only consider top non-overlapping relevant passages to maximise for information
             if not overlap:
                 relevant_items.append(deepcopy(passage_item))
                 retrieved_passages.append(
@@ -301,6 +317,7 @@ def get_relevant_snippets(query, tokenizer, passage_ranker, timeout=10, max_sear
     # print("Total snippets extracted: ", len(retrieved_passages))
     return retrieved_passages
 
+
 def get_web_evidences_for_claim(claim: str) -> Dict[str, Any]:
     """input: claim/sentence/document
        output: evidences is a dict with two keys: ['aggregated', 'question_wise']
@@ -310,8 +327,10 @@ def get_web_evidences_for_claim(claim: str) -> Dict[str, Any]:
        ['text', 'url', 'sents_per_passage', 'retrieval_score']"""
     evidences = dict()
     evidences["aggregated"] = list()
-    question_duplicate_model = CrossEncoder('navteca/quora-roberta-base', device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),)
-    tokenizer = spacy.load("en_core_web_sm", disable=["ner", "tagger", "lemmatizer"])
+    question_duplicate_model = CrossEncoder(
+        'navteca/quora-roberta-base', device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),)
+    tokenizer = spacy.load("en_core_web_sm", disable=[
+                           "ner", "tagger", "lemmatizer"])
     passage_ranker = CrossEncoder(
         "cross-encoder/ms-marco-MiniLM-L-6-v2",
         max_length=512,
@@ -322,27 +341,32 @@ def get_web_evidences_for_claim(claim: str) -> Dict[str, Any]:
     while len(questions) <= 0:
         questions = run_question_generation(
             prompt=QGEN_PROMPT.format(claim=claim),
-            model = "gpt-3.5-turbo",
+            model="gpt-3.5-turbo",
             temperature=0.7,
             num_rounds=2,
         )
     questions = list(set(questions))
-        
+
     if len(questions) > 0:
-        questions = remove_duplicate_questions(question_duplicate_model, questions)  
+        questions = remove_duplicate_questions(
+            question_duplicate_model, questions)
     questions = list(questions)
     print(questions)
     snippets = dict()
     for question in questions:
-        snippets[question] = get_relevant_snippets(question, tokenizer, passage_ranker, max_search_results_per_query=5, max_passages_per_search_result_to_return=3)
-        snippets[question] = deepcopy(sorted(snippets[question], key=lambda snippet: snippet["retrieval_score"], reverse=True)[:5])
+        snippets[question] = get_relevant_snippets(
+            question, tokenizer, passage_ranker, max_search_results_per_query=5, max_passages_per_search_result_to_return=3)
+        snippets[question] = deepcopy(sorted(
+            snippets[question], key=lambda snippet: snippet["retrieval_score"], reverse=True)[:5])
 
     evidences["question_wise"] = deepcopy(snippets)
     while len(evidences["aggregated"]) < 5:
         for key in evidences["question_wise"]:
             # Take top evidences for each question
-            index = int(len(evidences["aggregated"])/len(evidences["question_wise"]))
-            evidences["aggregated"].append(evidences["question_wise"][key][index])
+            index = int(len(evidences["aggregated"]) /
+                        len(evidences["question_wise"]))
+            evidences["aggregated"].append(
+                evidences["question_wise"][key][index])
             if len(evidences["aggregated"]) >= 5:
-                break 
+                break
     return evidences
